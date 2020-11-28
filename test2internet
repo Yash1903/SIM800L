@@ -1,0 +1,137 @@
+// To eliminate unecessary data usage, the data is reported using a HEAD method.
+// Uses a SIM800L to connect to the GPRS network.
+
+#include <SoftwareSerial.h>
+#define GSM_TX 3
+#define GSM_RX 4
+#define GSM_RESET 2
+#define BATTERY A3
+#define STATUS 13
+
+// Set the GPRS Access Point Name (APN) to suit your SIM card.
+#define AccessPointName "hologram"
+// Set the address of the server where the measurements should be reported.
+#define HTTPserver "http://xyz.000webhostapp.com"
+// Set the URL of the program that receives the measurements.
+#define HTTPurl "/newdata.php?"
+
+SoftwareSerial GSM_serial(GSM_RX, GSM_TX);
+// Note that only GSM_TX is used. GSM_RX is not used.
+
+void connect()
+{
+  GSM_serial.print("+++");
+  delay(1000);
+  GSM_serial.print("AT\r\n");
+  delay(1000);
+  GSM_serial.print("ATE1\r\n"); // Turn on echo, makes it easier to debug the SIM800L
+  delay(1000);
+  GSM_serial.print("AT+CGATT=1\r\n");
+  delay(1000);
+  GSM_serial.print("AT+SAPBR=3,1,\"CONTYPE\",\"GPRS\"\r\n");
+  delay(1000);
+  GSM_serial.print("AT+SAPBR=3,1,\"APN\",\"");
+  GSM_serial.print(AccessPointName);
+  GSM_serial.print("\"\r\n");
+  delay(1000);
+  GSM_serial.print("AT+SAPBR=1,1\r\n");
+  delay(3000);
+}
+
+void disconnect()
+{
+  GSM_serial.print("AT+SAPBR=0,1\r\n");
+}
+
+void HTTPhead(char *message)
+{
+  digitalWrite(STATUS, 1);
+  connect();
+  GSM_serial.print("AT+HTTPINIT\r\n");
+  delay(1000);
+  GSM_serial.print("AT+HTTPPARA=\"CID\",1\r\n");
+  delay(1000);
+  GSM_serial.print("AT+HTTPPARA=\"URL\",\"");
+  GSM_serial.print(HTTPserver);
+  GSM_serial.print(HTTPurl);
+  GSM_serial.print(message);
+  GSM_serial.print("\"\r\n");
+  delay(1000);
+  GSM_serial.print("AT+HTTPACTION=2\r\n"); // Request header only, reduces data usage
+  delay(3000);
+  GSM_serial.print("AT+HTTPTERM\r\n");
+  disconnect();
+  digitalWrite(STATUS, 0);
+  delay(45000);  // To make function last 1 minute
+}
+
+void reset_GSM()
+{
+  digitalWrite(STATUS, 1);
+  digitalWrite(GSM_RESET, 0);
+  delay(100);
+  digitalWrite(GSM_RESET, 1);
+  digitalWrite(STATUS, 0);
+  delay(59000);  // To make function last 1 minute
+}
+
+void low_power_GSM()
+{
+  GSM_serial.print("AT+CFUN=0,1\r\n");
+  delay(60000);  // To make function last 1 minute
+}
+
+void full_power_GSM()
+{
+  GSM_serial.print("AT+CFUN=1,1\r\n");
+  delay(60000);  // To make function last 1 minute
+}
+
+float battery_voltage() // Read the battery voltage
+{
+  float voltage = 0;
+  for (int i=0; i<30; i++)
+  {
+    int batteryValue = analogRead(BATTERY);
+    voltage += batteryValue * (16.128 / 1023.0); // This formula must be adjusted to suit the Vcc voltage
+    delay(2000);                                 // and the avlues of the resistors used for measurement
+  }                                              // Should be 16.0/1023.0 for Vcc=4v and perfectly equal resistors.
+  return voltage/30; // To smooth out any noise, 30 samples are taken and the average is returned.
+}
+
+void setup()
+{
+  Serial.begin(9600);
+  Serial.println("Reset");
+
+  pinMode(GSM_RESET, OUTPUT);
+  digitalWrite(GSM_RESET, 1);
+
+  pinMode(STATUS, OUTPUT);
+  digitalWrite(STATUS, 0);te
+
+  GSM_serial.begin(9600);
+  reset_GSM();
+}
+
+void delay_minute()
+{
+  for (int i=0; i<60; i++) delay(1000);
+}
+
+void loop()  // Battery voltage measurement is reported once per hour.
+{
+  char buf[20];
+
+  float bv = battery_voltage();            // Read battery voltage and convert to string "voltage=nn.n"
+  dtostrf(bv, 3, 1, buf);
+  String message = String("voltage=");
+  message +=buf;
+  
+  full_power_GSM();                        // Move to full power mode to get ready to send data.
+  message.toCharArray(buf, 20);            // Prepare message.
+  HTTPhead(buf);                           // Report measurement by sending HEAD message to internet URL.
+  reset_GSM();                             // Reset SIM800L to prevent unwanted data usage.
+  low_power_GSM();                         // SIM800L uses a lot of power if it is left if full power mode.
+  for (int i=0; i<55; i++) delay_minute(); // Wait an hour until the next report.
+}
